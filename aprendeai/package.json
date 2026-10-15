@@ -1,0 +1,148 @@
+{
+  "name": "aprendeai",
+  "displayName": "AprendeAI - Mentor Socrático de Programação",
+  "description": "Mentor socrático de programação com escada de dicas pedagógicas e válvula de escape anti-pânico",
+  "version": "0.1.0",
+  "publisher": "aprendeai",
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Education",
+    "Programming Languages",
+    "AI",
+    "Machine Learning"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onView:aprendeai.tutorView",
+    "onCommand:aprendeai.askHint",
+    "onCommand:aprendeai.explainTerminal",
+    "onCommand:aprendeai.emergencyBypass",
+    "onCommand:aprendeai.generateStudyNote"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aprendeai-sidebar",
+          "title": "AprendeAI",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "aprendeai-sidebar": [
+        {
+          "id": "aprendeai.tutorView",
+          "name": "Tutor Socrático",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "aprendeai.askHint",
+        "title": "Pedir Ajuda Socrática",
+        "category": "AprendeAI"
+      },
+      {
+        "command": "aprendeai.explainTerminal",
+        "title": "Analisar Erro do Terminal",
+        "category": "AprendeAI"
+      },
+      {
+        "command": "aprendeai.emergencyBypass",
+        "title": "Válvula de Escape",
+        "category": "AprendeAI"
+      },
+      {
+        "command": "aprendeai.generateStudyNote",
+        "title": "Gerar Nota Pedagógica (Obsidian)",
+        "category": "AprendeAI"
+      },
+      {
+        "command": "aprendeai.togglePower",
+        "title": "Ligar / Pausar Mentor Socrático",
+        "category": "AprendeAI"
+      },
+      {
+        "command": "aprendeai.chatWithCat",
+        "title": "Conversar com o Gato Byte (Miau!)",
+        "category": "AprendeAI"
+      }
+    ],
+    "configuration": {
+      "title": "AprendeAI",
+      "properties": {
+        "aprendeai.provider": {
+          "type": "string",
+          "enum": [
+            "ollama",
+            "gemini",
+            "openai",
+            "claude"
+          ],
+          "default": "ollama",
+          "description": "Provedor de IA ativo para o Mentor Socrático."
+        },
+        "aprendeai.ollama.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "URL base do servidor Ollama local."
+        },
+        "aprendeai.ollama.model": {
+          "type": "string",
+          "default": "qwen2.5-coder:7b",
+          "description": "Modelo Ollama utilizado pelo AprendeAI."
+        },
+        "aprendeai.gemini.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Chave de API do Google Gemini.",
+          "password": true
+        },
+        "aprendeai.gemini.model": {
+          "type": "string",
+          "default": "gemini-1.5-flash",
+          "description": "Modelo Google Gemini."
+        },
+        "aprendeai.openai.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Chave de API da OpenAI.",
+          "password": true
+        },
+        "aprendeai.openai.model": {
+          "type": "string",
+          "default": "gpt-4o-mini",
+          "description": "Modelo OpenAI."
+        },
+        "aprendeai.claude.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Chave de API da Anthropic Claude.",
+          "password": true
+        },
+        "aprendeai.claude.model": {
+          "type": "string",
+          "default": "claude-3-5-sonnet-20241022",
+          "description": "Modelo Anthropic Claude."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "build": "node esbuild.js --production",
+    "type-check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.93.0",
+    "esbuild": "^0.23.0",
+    "typescript": "^5.5.4"
+  }
+}
