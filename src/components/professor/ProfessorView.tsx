@@ -1,7 +1,15 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { Student, CommandLog, Repository } from "@/lib/types";
+import { Turma } from "@/lib/initialData";
+import {
+  type ResetResult,
+  type ResetOptions,
+} from "@/context/GitSimContext";
+import { getTeacherToken } from "@/lib/teacherUnlock";
+import { useModalAccessibility } from "../useModalAccessibility";
+import { detectCopiedAlert } from "@/lib/activity";
 import {
   Users,
   CheckCircle2,
@@ -23,21 +31,134 @@ import {
 interface Props {
   students: Student[];
   logs: CommandLog[];
-  repository: Repository;
-  onResetClass: () => void;
+  /** Um repositório por turma — o painel mostra as duas listas separadas. */
+  repositories: Record<Turma, Repository>;
+  /** Linhas da chamada antiga sem turma reconhecível — só aparecem aqui. */
+  legacyLines: string[];
+  onResetClass: (opts?: ResetOptions) => Promise<ResetResult> | void;
   onUpdateRepo: (repo: Repository) => void;
 }
 
 export const ProfessorView: React.FC<Props> = ({
   students,
   logs,
-  repository,
+  repositories,
+  legacyLines,
   onResetClass,
   onUpdateRepo,
 }) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedStudentForLogs, setSelectedStudentForLogs] = useState<Student | null>(null);
   const [filterTurma, setFilterTurma] = useState<string>("todas");
+  // Senha do professor (FALLBACK, S5): vive SÓ no estado desta montagem
+  // e é enviada nesta chamada de reset — NUNCA persistida no cliente
+  // (a correção de 30/10/2026 removeu a senha do sessionStorage; versões
+  // antigas que a gravaram são limpas pelo contexto na montagem).
+  // Desbloqueio ÚNICO: com o painel desbloqueado, o reset já é autorizado
+  // pelo token de sessão — este campo só é preciso se o desbloqueio expirou.
+  const [teacherPassword, setTeacherPassword] = useState("");
+  const [resetAuthMessage, setResetAuthMessage] = useState<string | null>(null);
+  const teacherPasswordRef = useRef<HTMLInputElement | null>(null);
+
+  const handleTeacherPasswordChange = (value: string) => {
+    setTeacherPassword(value);
+  };
+
+  const handleResetClass = async () => {
+    const result = await onResetClass({
+      teacherPassword: teacherPassword || undefined,
+    });
+    if (!result || result.cancelled || result.ok) {
+      if (result?.ok) setResetAuthMessage(null);
+      return;
+    }
+    if (result.unauthorized) {
+      setResetAuthMessage(
+        "Desbloqueio expirado ou senha incorreta: desbloqueie o painel de novo pelo cadeado, ou informe a senha do professor no campo abaixo e tente resetar novamente. Nenhum dado foi apagado."
+      );
+      teacherPasswordRef.current?.focus();
+    } else if (result.unavailable) {
+      setResetAuthMessage(
+        "Reset indisponível no servidor: a senha do professor não está configurada no ambiente de produção. Nenhum dado foi apagado."
+      );
+    } else if (result.failed) {
+      setResetAuthMessage(
+        "Falha no servidor ao resetar: nenhum dado foi apagado. Tente de novo em alguns segundos."
+      );
+    }
+  };
+
+  // Exportação do professor (P5): baixa o JSON do servidor com as duas
+  // chamadas, alunos, legados e auditoria — o backup a fazer ANTES do
+  // fim da aula ou de um reset. Usa o token do desbloqueio.
+  const downloadJson = (filename: string, data: unknown) => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], {
+      type: "application/json;charset=utf-8;",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportTeacherJson = async () => {
+    const token = getTeacherToken();
+    if (!token) {
+      alert("Desbloqueie o painel pelo cadeado para exportar.");
+      return;
+    }
+    try {
+      const res = await fetch("/api/teacher/export", {
+        headers: { "x-teacher-token": token },
+      });
+      if (!res.ok) {
+        alert("Falha ao exportar no servidor. Nenhum arquivo foi baixado.");
+        return;
+      }
+      downloadJson(
+        `gitedu_export_${new Date().toISOString().slice(0, 10)}.json`,
+        await res.json()
+      );
+    } catch {
+      alert("Falha de conexão ao exportar. Nenhum arquivo foi baixado.");
+    }
+  };
+
+  const handleDownloadSnapshot = async () => {
+    const token = getTeacherToken();
+    if (!token) {
+      alert("Desbloqueie o painel pelo cadeado para baixar o snapshot.");
+      return;
+    }
+    try {
+      const res = await fetch("/api/teacher/snapshot", {
+        headers: { "x-teacher-token": token },
+      });
+      if (res.status === 404) {
+        alert("Ainda não há snapshot pré-reset (nenhum reset foi feito).");
+        return;
+      }
+      if (!res.ok) {
+        alert("Falha ao baixar o snapshot no servidor.");
+        return;
+      }
+      downloadJson(
+        `gitedu_snapshot_pre_reset_${new Date().toISOString().slice(0, 10)}.json`,
+        await res.json()
+      );
+    } catch {
+      alert("Falha de conexão ao baixar o snapshot.");
+    }
+  };
+  // Modal de logs: Escape, foco inicial, trap e retorno de foco.
+  const logsDialogRef = useModalAccessibility(
+    selectedStudentForLogs !== null,
+    () => setSelectedStudentForLogs(null)
+  );
 
   // Métricas agregadas
   const totalStudents = students.length;
@@ -67,6 +188,16 @@ export const ProfessorView: React.FC<Props> = ({
     ? logs.filter((l) => l.studentId === selectedStudentForLogs.id)
     : [];
 
+  // Campo CSV com escape (S9): dobra aspas internas e neutraliza
+  // injeção de fórmula — valor começando por =, +, - ou @ ganha um TAB
+  // dentro das aspas (o Excel não o executa como fórmula e o texto
+  // continua legível). Sem isso, um nome forjado quebrava a planilha.
+  const csvField = (value: string): string => {
+    const escaped = value.replace(/"/g, '""');
+    const prefix = /^[=+\-@\t\r]/.test(value) ? "\t" : "";
+    return `"${prefix}${escaped}"`;
+  };
+
   // Exportar dados para CSV
   const handleExportCSV = () => {
     if (students.length === 0) {
@@ -74,15 +205,17 @@ export const ProfessorView: React.FC<Props> = ({
       return;
     }
 
-    const headers = "Nome,Turma,Nota,Clonou,Editou,Commitou,DeuPush,TotalComandos,ComandosComErro,UltimaAtividade\n";
+    const headers = "Nome,Turma,Nota,Clonou,Editou,Commitou,DeuPush,TotalComandos,ComandosComErro,UltimaAtividade,ConceitosDominados,DiagnosticoUsado,NotaSemAjuda\n";
     const rows = students
       .map(
         (s) =>
-          `"${s.name}","${s.turma}",${s.score},${s.hasCloned ? "SIM" : "NÃO"},${
+          `${csvField(s.name)},${csvField(s.turma)},${s.score},${s.hasCloned ? "SIM" : "NÃO"},${
             s.hasEdited ? "SIM" : "NÃO"
           },${s.hasCommitted ? "SIM" : "NÃO"},${s.hasPushed ? "SIM" : "NÃO"},${s.totalCommands},${
             s.errorCommands
-          },"${new Date(s.lastActive).toLocaleString("pt-BR")}"`
+          },${csvField(new Date(s.lastActive).toLocaleString("pt-BR"))},${s.masteredConcepts?.length ?? 0},${
+            s.diagnosticCommands?.length ?? 0
+          },${s.unaidedScore ?? 0}`
       )
       .join("\n");
 
@@ -138,39 +271,136 @@ export const ProfessorView: React.FC<Props> = ({
               Exportar CSV
             </button>
             <button
-              onClick={onResetClass}
+              onClick={handleExportTeacherJson}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-blue-700 hover:bg-blue-600 text-white text-xs font-semibold shadow transition cursor-pointer"
+            >
+              <FileSpreadsheet className="w-4 h-4" />
+              Exportar chamada + auditoria (JSON)
+            </button>
+            <button
+              onClick={handleDownloadSnapshot}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-xs font-semibold text-gray-200 transition cursor-pointer"
+            >
+              <Clock className="w-4 h-4" />
+              Snapshot pré-reset
+            </button>
+            <button
+              onClick={handleResetClass}
               className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-red-950/60 hover:bg-red-900 border border-red-800 text-red-200 text-xs font-semibold transition cursor-pointer"
             >
               <RotateCcw className="w-4 h-4" />
               Resetar Turma
             </button>
           </div>
+
+          {/* SENHA DO PROFESSOR (FALLBACK) — com o painel desbloqueado, o
+              reset já é autorizado pelo desbloqueio e este campo não é
+              preciso; ele só vale se o desbloqueio expirou. A senha
+              digitada aqui NÃO é salva no navegador (só nesta chamada). */}
+          <div className="w-full border-t border-[#30363d] pt-4 flex flex-wrap items-center gap-3">
+            <label htmlFor="teacher-password" className="text-xs font-semibold text-gray-300">
+              Senha do professor:
+            </label>
+            <input
+              ref={teacherPasswordRef}
+              id="teacher-password"
+              type="password"
+              autoComplete="off"
+              placeholder="Necessária para resetar a turma"
+              aria-describedby="teacher-password-note"
+              value={teacherPassword}
+              onChange={(e) => handleTeacherPasswordChange(e.target.value)}
+              className="bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-500 focus:border-blue-500 w-56"
+            />
+            <p id="teacher-password-note" className="text-[11px] text-gray-500">
+              Com o painel desbloqueado, o reset já é autorizado pelo
+              desbloqueio — este campo é só um fallback (ex.: desbloqueio
+              expirado). O valor digitado não é salvo no navegador.
+            </p>
+          </div>
+
+          {resetAuthMessage && (
+            <div role="alert" className="w-full p-3 bg-red-950/60 border border-red-800 text-red-200 text-xs rounded-lg">
+              {resetAuthMessage}
+            </div>
+          )}
         </div>
 
-        {/* INFORMAÇÕES DO REPOSITÓRIO ATIVO */}
-        <div className="bg-[#161b22] border border-[#30363d] p-5 rounded-2xl flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-orange-600/20 text-orange-400 border border-orange-500/30">
-              <FolderGit2 className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-400">Repositório Ativo da Aula:</span>
-                <span className="font-mono text-sm font-bold text-white">
-                  {repository.owner} / {repository.name}
-                </span>
+        {/* REPOSITÓRIOS ATIVOS — UM POR TURMA */}
+        <div className="grid gap-4 md:grid-cols-2">
+          {(["201", "202"] as const).map((turma) => {
+            const repo = repositories[turma];
+            return (
+              <div
+                key={turma}
+                className="bg-[#161b22] border border-[#30363d] p-5 rounded-2xl flex flex-wrap items-center justify-between gap-4"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 rounded-xl bg-orange-600/20 text-orange-400 border border-orange-500/30">
+                    <FolderGit2 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-blue-950 text-blue-300 border border-blue-800 font-medium">
+                        Turma {turma}
+                      </span>
+                      <span className="font-mono text-sm font-bold text-white">
+                        {repo.owner} / {repo.name}
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      URL de Clone para os alunos:{" "}
+                      <span className="font-mono text-blue-400">{repo.cloneUrl}</span>
+                    </p>
+                  </div>
+                </div>
+                <div className="text-xs px-3 py-1.5 rounded-lg bg-[#21262d] border border-[#30363d] text-gray-300 flex items-center gap-2">
+                  <Code2 className="w-4 h-4 text-emerald-400" />
+                  <span>Commits Recebidos: <strong>{repo.commits.length}</strong></span>
+                </div>
               </div>
-              <p className="text-xs text-gray-400 mt-0.5">
-                URL de Clone para os alunos:{" "}
-                <span className="font-mono text-blue-400">{repository.cloneUrl}</span>
+            );
+          })}
+        </div>
+
+        {/* LISTAS DE CHAMADA POR TURMA — separadas e rotuladas */}
+        <div className="grid gap-4 md:grid-cols-2">
+          {(["201", "202"] as const).map((turma) => {
+            const repo = repositories[turma];
+            return (
+              <div key={turma} className="bg-[#161b22] border border-[#30363d] rounded-2xl overflow-hidden">
+                <div className="px-5 py-3 bg-[#1c2128] border-b border-[#30363d] flex items-center justify-between">
+                  <h2 className="text-sm font-bold text-white">
+                    Lista de chamada — Turma {turma}
+                  </h2>
+                  <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-[#21262d] border border-[#30363d] text-gray-300">
+                    {repo.files["chamada.txt"]?.split("\n").length || 0} linhas
+                  </span>
+                </div>
+                <pre className="p-5 bg-[#0d1117] font-mono text-xs text-gray-200 leading-relaxed whitespace-pre-wrap overflow-x-auto">
+                  {repo.files["chamada.txt"] || "Lista vazia"}
+                </pre>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* LINHAS LEGADAS — sem turma reconhecível na migração; só o professor vê */}
+        {legacyLines.length > 0 && (
+          <div className="bg-[#161b22] border border-amber-800 rounded-2xl overflow-hidden">
+            <div className="px-5 py-3 bg-[#1c2128] border-b border-amber-800">
+              <h2 className="text-sm font-bold text-amber-300">
+                Linhas sem turma reconhecível ({legacyLines.length})
+              </h2>
+              <p className="text-[11px] text-gray-400 mt-0.5">
+                Vieram da lista antiga e não foram colocadas em nenhuma turma.
               </p>
             </div>
+            <pre className="p-5 bg-[#0d1117] font-mono text-xs text-gray-200 leading-relaxed whitespace-pre-wrap overflow-x-auto">
+              {legacyLines.join("\n")}
+            </pre>
           </div>
-          <div className="text-xs px-3 py-1.5 rounded-lg bg-[#21262d] border border-[#30363d] text-gray-300 flex items-center gap-2">
-            <Code2 className="w-4 h-4 text-emerald-400" />
-            <span>Commits Recebidos: <strong>{repository.commits.length}</strong></span>
-          </div>
-        </div>
+        )}
 
         {/* CARDS DE MÉTRICAS */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
@@ -218,7 +448,7 @@ export const ProfessorView: React.FC<Props> = ({
 
           <div className="bg-[#161b22] border border-[#30363d] p-4 rounded-xl">
             <div className="text-xs text-gray-400 flex items-center justify-between mb-1">
-              <span>4. Push Enviado (100%)</span>
+              <span>4. Push Enviado</span>
               <span className="text-yellow-400 font-mono text-xs">git push</span>
             </div>
             <div className="text-2xl font-bold text-yellow-400">{pushedCount}</div>
@@ -242,6 +472,7 @@ export const ProfessorView: React.FC<Props> = ({
               {/* FILTRO POR TURMA */}
               {turmas.length > 0 && (
                 <select
+                  aria-label="Filtrar por turma"
                   value={filterTurma}
                   onChange={(e) => setFilterTurma(e.target.value)}
                   className="bg-[#0d1117] border border-[#30363d] text-xs text-gray-300 rounded-lg px-2.5 py-1.5 outline-none"
@@ -260,6 +491,7 @@ export const ProfessorView: React.FC<Props> = ({
                 <Search className="w-3.5 h-3.5 text-gray-500 absolute left-2.5 top-2.5" />
                 <input
                   type="text"
+                  aria-label="Buscar aluno ou turma"
                   placeholder="Buscar aluno ou turma..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
@@ -292,7 +524,14 @@ export const ProfessorView: React.FC<Props> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#21262d]">
-                  {filteredStudents.map((st) => (
+                  {filteredStudents.map((st) => {
+                    // Alerta "só copiou" (frente UI/UX): cálculo derivado dos
+                    // logs já carregados — sem nova rota, sem mudar a nota.
+                    const copiedAlert = detectCopiedAlert(
+                      st,
+                      logs.filter((l) => l.studentId === st.id)
+                    );
+                    return (
                     <tr key={st.id} className="hover:bg-[#1f242c] transition">
                       <td className="py-3.5 px-4">
                         <div className="flex items-center gap-2.5">
@@ -302,6 +541,16 @@ export const ProfessorView: React.FC<Props> = ({
                           <div>
                             <div className="font-semibold text-white">{st.name}</div>
                             <div className="text-[10px] text-gray-500">ID: {st.id.slice(-6)}</div>
+                            {copiedAlert.alert && (
+                              <button
+                                type="button"
+                                onClick={() => setSelectedStudentForLogs(st)}
+                                title={copiedAlert.reasons.join("\n")}
+                                className="mt-1 text-left text-[10px] px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800 font-semibold cursor-pointer"
+                              >
+                                ⚠️ Indício de “só copiou” — ver motivos nos logs
+                              </button>
+                            )}
                           </div>
                         </div>
                       </td>
@@ -399,7 +648,8 @@ export const ProfessorView: React.FC<Props> = ({
                         </button>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -410,7 +660,13 @@ export const ProfessorView: React.FC<Props> = ({
       {/* MODAL INSPETOR DE LOGS DE COMANDOS DO ALUNO */}
       {selectedStudentForLogs && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-3xl max-h-[85vh] rounded-2xl bg-[#161b22] border border-[#30363d] shadow-2xl flex flex-col text-white overflow-hidden">
+          <div
+            ref={logsDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="student-logs-title"
+            className="w-full max-w-3xl max-h-[85vh] rounded-2xl bg-[#161b22] border border-[#30363d] shadow-2xl flex flex-col text-white overflow-hidden"
+          >
             {/* CABEÇALHO DO MODAL */}
             <div className="p-4 bg-[#1c2128] border-b border-[#30363d] flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -418,7 +674,7 @@ export const ProfessorView: React.FC<Props> = ({
                   <Terminal className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-white text-base">
+                  <h3 id="student-logs-title" className="font-bold text-white text-base">
                     Histórico de Terminal: {selectedStudentForLogs.name}
                   </h3>
                   <p className="text-xs text-gray-400">
@@ -430,11 +686,35 @@ export const ProfessorView: React.FC<Props> = ({
 
               <button
                 onClick={() => setSelectedStudentForLogs(null)}
+                aria-label="Fechar histórico de logs"
                 className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-[#30363d] transition cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {/* ALERTA "SÓ COPIOU" — motivos visíveis + aviso de que é
+                indício, não prova, e NÃO altera a nota do aluno. */}
+            {(() => {
+              const modalAlert = detectCopiedAlert(selectedStudentForLogs, studentLogs);
+              if (!modalAlert.alert) return null;
+              return (
+                <div
+                  role="alert"
+                  className="m-4 mb-0 p-3 rounded-xl bg-amber-950/40 border border-amber-800 text-amber-200 text-xs font-sans"
+                >
+                  <p className="font-bold">
+                    ⚠️ Indício de “só copiou” — converse com o aluno antes de concluir qualquer
+                    coisa. Este alerta não muda a nota.
+                  </p>
+                  <ul className="list-disc pl-5 mt-1.5 space-y-1">
+                    {modalAlert.reasons.map((reason, i) => (
+                      <li key={i}>{reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })()}
 
             {/* LISTA DE COMANDOS EXECUTADOS PELO ALUNO */}
             <div className="flex-1 overflow-y-auto p-4 space-y-3 font-mono text-xs">
