@@ -24,3 +24,14 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/*
+ * Foco visível global (acessibilidade): nenhum outline é removido sem
+ * substituto — esta regra não está em @layer do Tailwind, então prevalece
+ * sobre utilitários como focus:outline-none/outline-none dos componentes.
+ * Azul #58a6ff contrasta com os fundos escuros do simulador e com o claro.
+ */
+:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
