@@ -4,29 +4,49 @@ import React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Student } from "@/lib/types";
+import type { ResetResult } from "@/context/GitSimContext";
 import {
   GitBranch,
   Terminal,
-  ShieldCheck,
   User,
   CheckCircle2,
   Circle,
   HelpCircle,
   RotateCcw,
+  LogOut,
 } from "lucide-react";
 
 interface NavbarProps {
   currentStudent: Student | null;
   onOpenIdentification: () => void;
-  onResetData?: () => void;
+  /** Encerra só a sessão do aluno atual (botão "Sair"). */
+  onSignOut?: () => void;
+  onResetData?: () => Promise<ResetResult> | void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
   currentStudent,
   onOpenIdentification,
+  onSignOut,
   onResetData,
 }) => {
   const pathname = usePathname();
+
+  // Reset via Navbar usa o mesmo resultado do contexto: em 401/503 o
+  // contexto não apaga nada local, então avisamos em vez de silenciar.
+  const handleReset = async () => {
+    const result = await onResetData?.();
+    if (!result || result.cancelled || result.ok) return;
+    if (result.unauthorized) {
+      alert(
+        "Senha do professor incorreta ou ausente: abra o Painel do Professor pelo cadeado no canto da página e informe a senha no campo do painel, depois tente resetar novamente. Nenhum dado foi apagado."
+      );
+    } else if (result.unavailable) {
+      alert(
+        "Reset indisponível no servidor: a senha do professor não está configurada no ambiente de produção. Nenhum dado foi apagado."
+      );
+    }
+  };
 
   const navLinks = [
     {
@@ -41,12 +61,8 @@ export const Navbar: React.FC<NavbarProps> = ({
       icon: Terminal,
       desc: "Editor & Comandos Git",
     },
-    {
-      href: "/professor",
-      label: "Painel do Professor",
-      icon: ShieldCheck,
-      desc: "Métricas & Logs de Comandos",
-    },
+    // Sem link para o Painel do Professor: o único acesso é o cadeado
+    // discreto no canto da página (TeacherLockButton, no AppWrapper).
   ];
 
   return (
@@ -183,6 +199,23 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </div>
                 </div>
               </button>
+
+              {/* Sair: encerra só a sessão do aluno atual e volta à
+                  identificação, para outro aluno entrar na mesma
+                  máquina. Não apaga repositório, alunos, logs nem
+                  notas — e não é o reset do professor (ícone ao lado). */}
+              {onSignOut && (
+                <button
+                  type="button"
+                  onClick={onSignOut}
+                  title="Sair e trocar de aluno"
+                  aria-label="Sair e trocar de aluno"
+                  className="flex items-center gap-1.5 pl-3 border-l border-[#30363d] text-xs font-semibold text-red-300 hover:text-red-200 transition cursor-pointer"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  Sair
+                </button>
+              )}
             </div>
           ) : (
             <button
@@ -196,7 +229,8 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {onResetData && (
             <button
-              onClick={onResetData}
+              onClick={handleReset}
+              aria-label="Resetar dados para estado inicial"
               title="Resetar dados para estado inicial"
               className="p-2 text-gray-400 hover:text-red-400 hover:bg-red-950/30 rounded-lg border border-transparent hover:border-red-900/50 transition cursor-pointer"
             >

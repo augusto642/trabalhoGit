@@ -4,12 +4,12 @@ import React, { useEffect } from "react";
 import Link from "next/link";
 import confetti from "canvas-confetti";
 import { Student } from "@/lib/types";
+import { useModalAccessibility } from "./useModalAccessibility";
 import {
   Trophy,
   Sparkles,
   CheckCircle2,
   FolderGit2,
-  ShieldCheck,
   ArrowRight,
   X,
   Star,
@@ -27,6 +27,9 @@ export const TaskCompletionModal: React.FC<Props> = ({
   isOpen,
   onClose,
 }) => {
+  // Hook antes do early return: Escape, foco inicial, trap e retorno de foco.
+  const dialogRef = useModalAccessibility(isOpen, onClose);
+
   useEffect(() => {
     if (isOpen) {
       // Disparo comemorativo de confetes em duas rajadas
@@ -49,11 +52,18 @@ export const TaskCompletionModal: React.FC<Props> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="relative w-full max-w-lg rounded-2xl bg-[#161b22] border border-[#30363d] shadow-[0_0_50px_-10px_rgba(59,130,246,0.3)] overflow-hidden transition-all transform scale-100 p-6 sm:p-8 text-center text-[#c9d1d9]">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="task-completion-title"
+        className="relative w-full max-w-lg rounded-2xl bg-[#161b22] border border-[#30363d] shadow-[0_0_50px_-10px_rgba(59,130,246,0.3)] overflow-hidden transition-all transform scale-100 p-6 sm:p-8 text-center text-[#c9d1d9]"
+      >
         {/* BOTÃO FECHAR */}
         <button
           onClick={onClose}
           type="button"
+          aria-label="Fechar modal de conclusão"
           className="absolute top-4 right-4 p-2 rounded-lg text-gray-400 hover:text-white hover:bg-[#21262d] transition cursor-pointer"
           title="Fechar"
         >
@@ -78,7 +88,7 @@ export const TaskCompletionModal: React.FC<Props> = ({
           Missão Prática Concluída!
         </div>
 
-        <h2 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+        <h2 id="task-completion-title" className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
           Parabéns, {student.name}! 🎉
         </h2>
 
@@ -86,20 +96,31 @@ export const TaskCompletionModal: React.FC<Props> = ({
           Você completou com sucesso todos os passos da aula prática e sua presença já está registrada no repositório oficial da turma!
         </p>
 
-        {/* CARD DE PONTUAÇÃO & NOTA MÁXIMA */}
+        {/* CARD DE PONTUAÇÃO — nota REAL do aluno (frente UI/UX): só
+            concluir os 4 passos vale 70, não 100. "Máxima" só com 100 de fato. */}
         <div className="my-5 p-4 rounded-xl bg-gradient-to-r from-blue-950/40 via-[#1c2128] to-emerald-950/40 border border-[#30363d] flex items-center justify-between">
           <div className="text-left">
             <span className="text-[10px] uppercase font-bold tracking-wider text-gray-400 block">
               Desempenho da Atividade
             </span>
             <span className="text-xs text-emerald-400 font-semibold flex items-center gap-1 mt-0.5">
-              <Sparkles className="w-3.5 h-3.5" /> Nota Máxima Atingida
+              <Sparkles className="w-3.5 h-3.5" />
+              {student.score >= 100
+                ? "Nota Máxima Atingida"
+                : "4 passos concluídos — dá para subir a nota"}
             </span>
+            {student.score < 100 && (
+              <span className="text-[11px] text-gray-400 block mt-1 max-w-[220px] leading-relaxed">
+                Faltam pontos de aprendizado: dominar os conceitos (de primeira ou se
+                recuperando de erros), usar status/diff/log antes de agir e concluir a
+                Atividade 2 “Sem receita”.
+              </span>
+            )}
           </div>
 
           <div className="text-right">
             <span className="text-2xl sm:text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-teal-300">
-              100
+              {student.score}
             </span>
             <span className="text-xs text-gray-400 font-bold"> / 100 pts</span>
           </div>
@@ -117,11 +138,11 @@ export const TaskCompletionModal: React.FC<Props> = ({
           </div>
           <div className="flex items-center gap-2 text-gray-200">
             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-            <span>Snapshot local gravado com mensagem semântica</span>
+            <span>Commit gravado com uma mensagem que explica a mudança</span>
           </div>
           <div className="flex items-center gap-2 text-gray-200">
             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-            <span>Commits enviados e sincronizados na nuvem (GitHub)</span>
+            <span>Commit enviado para o repositório da turma (simulado)</span>
           </div>
         </div>
 
@@ -137,24 +158,15 @@ export const TaskCompletionModal: React.FC<Props> = ({
             <ArrowRight className="w-4 h-4 ml-auto" />
           </Link>
 
-          <div className="grid grid-cols-2 gap-2">
-            <Link
-              href="/professor"
-              onClick={onClose}
-              className="py-2.5 px-3 rounded-xl bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-gray-200 font-semibold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer active:scale-[0.98]"
-            >
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              Painel do Professor
-            </Link>
-
-            <button
-              onClick={onClose}
-              type="button"
-              className="py-2.5 px-3 rounded-xl bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-gray-300 font-semibold text-xs transition cursor-pointer active:scale-[0.98]"
-            >
-              Ficar no VS Code
-            </button>
-          </div>
+          {/* Sem atalho para o Painel do Professor: o único acesso é o
+              cadeado discreto no canto da página (TeacherLockButton). */}
+          <button
+            onClick={onClose}
+            type="button"
+            className="w-full py-2.5 px-3 rounded-xl bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-gray-300 font-semibold text-xs transition cursor-pointer active:scale-[0.98]"
+          >
+            Ficar no VS Code
+          </button>
         </div>
       </div>
     </div>
